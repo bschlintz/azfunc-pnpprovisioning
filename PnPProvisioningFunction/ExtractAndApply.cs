@@ -1,17 +1,16 @@
-using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Azure.WebJobs.Host;
-using System.Security.Cryptography.X509Certificates;
 using Microsoft.SharePoint.Client;
-using System.Threading;
+using Newtonsoft.Json;
+using OfficeDevPnP.Core.Framework.Provisioning.Model;
 using OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers;
 using System;
-using OfficeDevPnP.Core.Framework.Provisioning.Model;
-using Newtonsoft.Json;
+using System.Net;
+using System.Net.Http;
+using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace PnPProvisioningFunction
 {
@@ -24,9 +23,6 @@ namespace PnPProvisioningFunction
         [FunctionName("ExtractAndApply")]
         public static async Task<HttpResponseMessage> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = null)]HttpRequestMessage req, TraceWriter log)
         {
-            log.Info("PnPProvisioningFunction-ExtractAndApply started");
-
-
             // Get request body
             string jsonContent = await req.Content.ReadAsStringAsync();
             dynamic data = JsonConvert.DeserializeObject(jsonContent);
@@ -34,7 +30,7 @@ namespace PnPProvisioningFunction
             string targetUrl = data?.targetUrl;
 
 
-            //Return 400 if we're missing body params
+            // Return 400 if we're missing body params
             if (sourceUrl == null || targetUrl == null)
             {
                 return req.CreateResponse(HttpStatusCode.BadRequest, "Please pass a sourceUrl and targetUrl in the request body");
@@ -45,7 +41,8 @@ namespace PnPProvisioningFunction
             X509Certificate2 cert = null;
             try
             {
-                cert = GetCertificate();
+                cert = GetCertificate(THUMBPRINT);
+                if (cert == null) throw new Exception($"No certificate found with thumbprint: {THUMBPRINT}");
             }
             catch (Exception ex)
             {
@@ -59,6 +56,7 @@ namespace PnPProvisioningFunction
             try
             {
                 pnpTemplate = await GetProvisioningTemplate(sourceUrl, cert, log);
+                if (pnpTemplate == null) throw new Exception($"Unable to retrieve Provisioning Template from: {sourceUrl}");
             }
             catch (Exception ex)
             {
@@ -83,12 +81,14 @@ namespace PnPProvisioningFunction
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        private static X509Certificate2 GetCertificate()
+        private static X509Certificate2 GetCertificate(string thumbprint)
         {
             X509Store certStore = new X509Store(StoreName.My, StoreLocation.CurrentUser);
             certStore.Open(OpenFlags.ReadOnly);
-            X509Certificate2Collection certCollection = certStore.Certificates.Find(X509FindType.FindByThumbprint, THUMBPRINT, false);
-            return certCollection[0];
+            X509Certificate2Collection certCollection = certStore.Certificates.Find(
+                X509FindType.FindByThumbprint, thumbprint, false);
+
+            return certCollection.Count > 0 ? certCollection[0] : null;
         }
 
         private static async Task<ProvisioningTemplate> GetProvisioningTemplate(string url, X509Certificate2 cert, TraceWriter log)
@@ -97,7 +97,7 @@ namespace PnPProvisioningFunction
             OfficeDevPnP.Core.AuthenticationManager authMgr = new OfficeDevPnP.Core.AuthenticationManager();
             using (ClientContext sourceCtx = authMgr.GetAzureADAppOnlyAuthenticatedContext(url, CLIENT_ID, TENANT, cert))
             {
-                // Disable request timeout for extraction
+                // Disable request timeout
                 sourceCtx.RequestTimeout = Timeout.Infinite;
 
                 // Make sure our context is valid
@@ -116,15 +116,15 @@ namespace PnPProvisioningFunction
                 template = sourceCtx.Web.GetProvisioningTemplate(ptci);
                 log.Info($"Finished PnP template extraction");
             }
-            return await Task.FromResult<ProvisioningTemplate>(template);
+            return await Task.FromResult(template);
         }
 
-        private static async Task<Int32> ApplyProvisioningTemplate(string url, X509Certificate2 cert, ProvisioningTemplate template, TraceWriter log)
+        private static async Task<int> ApplyProvisioningTemplate(string url, X509Certificate2 cert, ProvisioningTemplate template, TraceWriter log)
         {
             OfficeDevPnP.Core.AuthenticationManager authMgr = new OfficeDevPnP.Core.AuthenticationManager();
             using (ClientContext targetCtx = authMgr.GetAzureADAppOnlyAuthenticatedContext(url, CLIENT_ID, TENANT, cert))
             {
-                // Disable request timeout for extraction
+                // Disable request timeout
                 targetCtx.RequestTimeout = Timeout.Infinite;
 
                 // Make sure our context is valid
